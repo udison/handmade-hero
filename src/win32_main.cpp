@@ -1,5 +1,8 @@
-#include <cstdint>
+#include <debugapi.h>
 #include <windows.h>
+#include <cstdint>
+#include <winuser.h>
+#include <xinput.h>
 
 // just a nice way of differentiating the uses of "static" keyword,
 // which can mean different thing in different contexts
@@ -30,10 +33,47 @@ struct win32_window_dimension {
 	int width; int height;
 };
 
+/*
+ * INFO: Since XInput API has some weird system requirements on different OSes,
+ *       we need a way to retrieve the necessary functions of the api that 
+ *       doesn't break our code if we link to a lib that does not exists.
+ *       First, we define stubs that are placeholder functions just to not have
+ *       empty pointers if we fail to provide the proper version of those functions
+ *       provided by the OS.
+ */
+#define X_INPUT_GET_STATE(name) DWORD WINAPI name(DWORD dwUserIndex, XINPUT_STATE* pState)
+typedef X_INPUT_GET_STATE(x_input_get_state);
+X_INPUT_GET_STATE(XInputGetStateStub) {
+	return 0;
+}
+global_var x_input_get_state* XInputGetState_ = XInputGetStateStub;
+#define XInputGetState XInputGetState_
+
+#define X_INPUT_SET_STATE(name) DWORD WINAPI name(DWORD dwUserIndex, XINPUT_VIBRATION* pVibration)
+typedef X_INPUT_SET_STATE(x_input_set_state);
+X_INPUT_SET_STATE(XInputSetStateStub) {
+	return 0;
+}
+global_var x_input_set_state* XInputSetState_ = XInputSetStateStub;
+#define XInputSetState XInputSetState_
+
+internal void win32_load_xinput(void) {
+	HMODULE xinput_library = LoadLibraryA("xinput1_3.dll");
+
+	if (xinput_library) {
+		XInputGetState = (x_input_get_state*)GetProcAddress(xinput_library, "XInputGetState");
+		XInputSetState = (x_input_set_state*)GetProcAddress(xinput_library, "XInputSetState");
+	}
+}
+
+/*
+ * End of XInput thingies
+ */
+
 global_var bool running;
 global_var win32_bmp_buffer backbuf;
 
-win32_window_dimension win32_get_window_dimension(HWND window) {
+internal win32_window_dimension win32_get_window_dimension(HWND window) {
 	RECT client_rect;
 	GetClientRect(window, &client_rect);
 
@@ -43,11 +83,11 @@ win32_window_dimension win32_get_window_dimension(HWND window) {
 	};
 }
 
-internal void render_cool_gradient(win32_bmp_buffer buf, int x_offset, int y_offset) {
-	uint8* row = (uint8*)buf.memory;
-	for (int y = 0; y < buf.height; y++) {
+internal void render_cool_gradient(win32_bmp_buffer* buf, int x_offset, int y_offset) {
+	uint8* row = (uint8*)buf->memory;
+	for (int y = 0; y < buf->height; y++) {
 		uint32* pixel = (uint32*)row;
-		for (int x = 0; x < buf.width; x++) {
+		for (int x = 0; x < buf->width; x++) {
 			uint8 b = x + x_offset;
 			uint8 g = y + y_offset;
 
@@ -57,7 +97,7 @@ internal void render_cool_gradient(win32_bmp_buffer buf, int x_offset, int y_off
 			*pixel++ = (g << 8) | b;
 		}
 
-		row += buf.pitch;
+		row += buf->pitch;
 	}
 }
 
@@ -91,14 +131,14 @@ internal void win32_resize_dbi_section(win32_bmp_buffer* buf, int w, int h) {
 	buf->pitch = buf->width * buf->pixel_size_in_bytes;
 }
 
-internal void win32_display_buffer(HDC device_ctx, int width, int height, win32_bmp_buffer buf) {
+internal void win32_display_buffer(HDC device_ctx, int width, int height, win32_bmp_buffer* buf) {
 	// TODO: aspect my ratio
 	StretchDIBits(
 		device_ctx,
 		0, 0, width, height, // source of the render - back buffer
-		0, 0, buf.width, buf.height, // section of the window to fill - front buffer
-		buf.memory,
-		&buf.info,
+		0, 0, buf->width, buf->height, // section of the window to fill - front buffer
+		buf->memory,
+		&buf->info,
 		DIB_RGB_COLORS,
 		SRCCOPY
 	);
@@ -139,9 +179,22 @@ LRESULT CALLBACK win32_main_window_callback(
 			HDC hdc = BeginPaint(window, &paint);
 
 			win32_window_dimension dim = win32_get_window_dimension(window);
-			win32_display_buffer(hdc, dim.width, dim.height, backbuf);
+			win32_display_buffer(hdc, dim.width, dim.height, &backbuf);
 
 			EndPaint(window, &paint);
+		} break;
+
+		case WM_SYSKEYDOWN:
+		case WM_SYSKEYUP:
+		case WM_KEYDOWN:
+		case WM_KEYUP: {
+			uint32 vkcode = w_param;
+			bool was_pressed = (l_param & (1 << 30)) != 0; // 30th bit indicates whether the key was pressed last call
+			bool is_pressed = (l_param & (1 << 31)) != 0; // 31th bit indicates whether the key is pressed right now
+
+			if (vkcode == VK_ESCAPE) {
+				running = false;
+			}
 		} break;
 
 		default: { // INFO: unhandled stuff
@@ -154,7 +207,9 @@ LRESULT CALLBACK win32_main_window_callback(
 }
 
 int CALLBACK WinMain(HINSTANCE instance, HINSTANCE prev_instance, LPSTR cmd_line, int show_cmd) {
-	WNDCLASS window_class = {
+	win32_load_xinput();
+
+	WNDCLASSA window_class = {
 		.style = CS_HREDRAW | CS_VREDRAW,
 		.lpfnWndProc = win32_main_window_callback,
 		.hInstance = instance,
@@ -198,15 +253,61 @@ int CALLBACK WinMain(HINSTANCE instance, HINSTANCE prev_instance, LPSTR cmd_line
 					DispatchMessage(&message);
 				}
 
-				render_cool_gradient(backbuf, x_offset, y_offset);
+				for (DWORD controller_index = 0; controller_index < XUSER_MAX_COUNT; controller_index++) {
+					XINPUT_STATE controller_state;
+
+					if (XInputGetState(controller_index, &controller_state) == ERROR_DEVICE_NOT_CONNECTED) {
+						continue;
+					}
+
+					XINPUT_GAMEPAD* pad = &controller_state.Gamepad;
+
+					bool pad_up             = pad->wButtons & XINPUT_GAMEPAD_DPAD_UP;
+					bool pad_down           = pad->wButtons & XINPUT_GAMEPAD_DPAD_DOWN;
+					bool pad_left           = pad->wButtons & XINPUT_GAMEPAD_DPAD_LEFT;
+					bool pad_right          = pad->wButtons & XINPUT_GAMEPAD_DPAD_RIGHT;
+					bool pad_start          = pad->wButtons & XINPUT_GAMEPAD_START;
+					bool pad_back           = pad->wButtons & XINPUT_GAMEPAD_BACK;
+					bool pad_left_shoulder  = pad->wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER;
+					bool pad_right_shoulder = pad->wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER;
+					bool pad_a              = pad->wButtons & XINPUT_GAMEPAD_A;
+					bool pad_b              = pad->wButtons & XINPUT_GAMEPAD_B;
+					bool pad_x              = pad->wButtons & XINPUT_GAMEPAD_X;
+					bool pad_y              = pad->wButtons & XINPUT_GAMEPAD_Y;
+
+					bool pad_lthumb_x       = pad->sThumbLX;
+					bool pad_lthumb_y       = pad->sThumbLY;
+					bool pad_rthumb_x       = pad->sThumbRX;
+					bool pad_rthumb_y       = pad->sThumbRY;
+
+					XINPUT_VIBRATION vibration;
+					vibration.wLeftMotorSpeed = 0;
+					vibration.wRightMotorSpeed = 0;
+
+					if (pad_left) {
+						x_offset--;
+						vibration.wLeftMotorSpeed = 60000;
+					}
+					else if (pad_right) {
+						x_offset++;
+						vibration.wRightMotorSpeed = 60000;
+					}
+
+					XInputSetState(1, &vibration);
+
+					if (pad_up) y_offset--;
+					else if (pad_down) y_offset++;
+				}
+
+				render_cool_gradient(&backbuf, x_offset, y_offset);
 
 				HDC hdc = GetDC(window);
 				win32_window_dimension dim = win32_get_window_dimension(window);
-				win32_display_buffer(hdc, dim.width, dim.height, backbuf);
+				win32_display_buffer(hdc, dim.width, dim.height, &backbuf);
 				ReleaseDC(window, hdc);
 
-				x_offset++;
-				y_offset++;
+				// x_offset++;
+				// y_offset++;
 			}
 		}
 	}
