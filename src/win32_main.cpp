@@ -224,64 +224,67 @@ internal void win32_init_dsound(HWND window, u32 samples_per_second, i32 buff_si
 	// load dsound dll
 	HMODULE dsound_lib = LoadLibraryA("dsound.dll");
 	
-	if (dsound_lib) {
-		// get directsound object
-		LPDIRECTSOUND direct_sound;
-		direct_sound_create_t* direct_sound_create_proc = (direct_sound_create_t *)GetProcAddress(dsound_lib, "DirectSoundCreate");
+	if (!dsound_lib) {
+		// TODO: log error
+		return;
+	}
 
-		if (!direct_sound_create_proc || !SUCCEEDED(direct_sound_create_proc(0, &direct_sound, 0))) {
-			// TODO: log error
-			return;
-		}
+	// get directsound object
+	LPDIRECTSOUND direct_sound;
+	direct_sound_create_t* direct_sound_create_proc = (direct_sound_create_t *)GetProcAddress(dsound_lib, "DirectSoundCreate");
 
-		if (!SUCCEEDED(direct_sound->SetCooperativeLevel(window, DSSCL_PRIORITY))) {
-			// TODO: log error
-			return;
-		}
+	if (!direct_sound_create_proc || !SUCCEEDED(direct_sound_create_proc(0, &direct_sound, 0))) {
+		// TODO: log error
+		return;
+	}
 
-		// create a primary buffer 
-		DSBUFFERDESC primary_buffer_desc = {};
-		primary_buffer_desc.dwSize = sizeof(primary_buffer_desc);
-		primary_buffer_desc.dwFlags = DSBCAPS_PRIMARYBUFFER;
+	if (!SUCCEEDED(direct_sound->SetCooperativeLevel(window, DSSCL_PRIORITY))) {
+		// TODO: log error
+		return;
+	}
 
-		LPDIRECTSOUNDBUFFER primary_buff;
+	// create a primary buffer 
+	DSBUFFERDESC primary_buffer_desc = {};
+	primary_buffer_desc.dwSize = sizeof(primary_buffer_desc);
+	primary_buffer_desc.dwFlags = DSBCAPS_PRIMARYBUFFER;
 
-		if (!SUCCEEDED(direct_sound->CreateSoundBuffer(&primary_buffer_desc, &primary_buff, 0))) {
-			// TODO: log error
-			return;
-		}
+	LPDIRECTSOUNDBUFFER primary_buff;
 
-		WAVEFORMATEX wave_format = {
-			.wFormatTag = WAVE_FORMAT_PCM,
-			.nChannels = 2,
-			.nSamplesPerSec = samples_per_second,
-			.wBitsPerSample = 16,
-			// .nAvgBytesPerSec = wave_format.nSamplesPerSec * wave_format.nBlockAlign,
-			// .nBlockAlign = wave_format.nChannels * wave_format.wBitsPerSample / 8,
-			.cbSize = 0,
-		};
+	if (!SUCCEEDED(direct_sound->CreateSoundBuffer(&primary_buffer_desc, &primary_buff, 0))) {
+		// TODO: log error
+		return;
+	}
 
-		wave_format.nBlockAlign = wave_format.nChannels * wave_format.wBitsPerSample / 8;
-		wave_format.nAvgBytesPerSec = wave_format.nSamplesPerSec * wave_format.nBlockAlign;
+	WAVEFORMATEX wave_format = {
+		.wFormatTag = WAVE_FORMAT_PCM,
+		.nChannels = 2,
+		.nSamplesPerSec = samples_per_second,
+		.wBitsPerSample = 16,
+		// .nAvgBytesPerSec = wave_format.nSamplesPerSec * wave_format.nBlockAlign,
+		// .nBlockAlign = wave_format.nChannels * wave_format.wBitsPerSample / 8,
+		.cbSize = 0,
+	};
 
-		if (!SUCCEEDED(primary_buff->SetFormat(&wave_format))) {
-			// TODO: log error
-			return;
-		}
+	wave_format.nBlockAlign = wave_format.nChannels * wave_format.wBitsPerSample / 8;
+	wave_format.nAvgBytesPerSec = wave_format.nSamplesPerSec * wave_format.nBlockAlign;
 
-		// create a secondary buffer - the one we actchually write data in
-		DSBUFFERDESC secondary_buffer_desc = {};
-		secondary_buffer_desc.dwSize = sizeof(secondary_buffer_desc);
-		secondary_buffer_desc.dwFlags = DSBCAPS_PRIMARYBUFFER;
-		secondary_buffer_desc.dwBufferBytes = buff_size;
-		secondary_buffer_desc.lpwfxFormat = &wave_format;
+	if (!SUCCEEDED(primary_buff->SetFormat(&wave_format))) {
+		// TODO: log error
+		return;
+	}
 
-		LPDIRECTSOUNDBUFFER secondary_buff;
+	// create a secondary buffer - the one we actchually write data in
+	DSBUFFERDESC secondary_buffer_desc = {};
+	secondary_buffer_desc.dwSize = sizeof(secondary_buffer_desc);
+	secondary_buffer_desc.dwFlags = DSBCAPS_PRIMARYBUFFER;
+	secondary_buffer_desc.dwBufferBytes = buff_size;
+	secondary_buffer_desc.lpwfxFormat = &wave_format;
 
-		if (!SUCCEEDED(direct_sound->CreateSoundBuffer(&secondary_buffer_desc, &secondary_buff, 0))) {
-			// TODO: log error
-			return;
-		}
+	LPDIRECTSOUNDBUFFER secondary_buff;
+
+	if (!SUCCEEDED(direct_sound->CreateSoundBuffer(&secondary_buffer_desc, &secondary_buff, 0))) {
+		// TODO: log error
+		return;
 	}
 }
 
