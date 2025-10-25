@@ -1,4 +1,3 @@
-#include <debugapi.h>
 #include <windows.h>
 #include <cstdint>
 #include <winuser.h>
@@ -10,15 +9,19 @@
 #define local_persist static // a variable that is persistent inside a scope (keeps its value when program go out of the scope and return to it later)
 #define global_var    static // a global variable... thats just it
 
-typedef uint8_t  uint8;
-typedef uint16_t uint16;
-typedef uint32_t uint32;
-typedef uint64_t uint64;
+#define GET_BIT(var, position) (var & (1 << position))
 
-typedef int8_t  int8;
-typedef int16_t int16;
-typedef int32_t int32;
-typedef int64_t int64;
+typedef uint8_t  u8;
+typedef uint16_t u16;
+typedef uint32_t u32;
+typedef uint64_t u64;
+
+typedef int32_t bool32;
+
+typedef int8_t  i8;
+typedef int16_t i16;
+typedef int32_t i32;
+typedef int64_t i64;
 
 struct win32_bmp_buffer {
 	BITMAPINFO info;
@@ -58,7 +61,10 @@ global_var x_input_set_state* XInputSetState_ = XInputSetStateStub;
 #define XInputSetState XInputSetState_
 
 internal void win32_load_xinput(void) {
-	HMODULE xinput_library = LoadLibraryA("xinput1_3.dll");
+	HMODULE xinput_library = LoadLibraryA("xinput1_4.dll");
+	if (!xinput_library) {
+		xinput_library = LoadLibraryA("xinput1_3.dll");
+	}
 
 	if (xinput_library) {
 		XInputGetState = (x_input_get_state*)GetProcAddress(xinput_library, "XInputGetState");
@@ -84,12 +90,12 @@ internal win32_window_dimension win32_get_window_dimension(HWND window) {
 }
 
 internal void render_cool_gradient(win32_bmp_buffer* buf, int x_offset, int y_offset) {
-	uint8* row = (uint8*)buf->memory;
+	u8* row = (u8*)buf->memory;
 	for (int y = 0; y < buf->height; y++) {
-		uint32* pixel = (uint32*)row;
+		u32* pixel = (u32*)row;
 		for (int x = 0; x < buf->width; x++) {
-			uint8 b = x + x_offset;
-			uint8 g = y + y_offset;
+			u8 b = x + x_offset;
+			u8 g = y + y_offset;
 
 			// 1. shift "g" left by 8 bits: 00 00 gg > 00 gg 00 
 			// 2. bitwise or "g" and "b": 00 gg 00 | 00 00 bb = 00 gg bb
@@ -188,11 +194,15 @@ LRESULT CALLBACK win32_main_window_callback(
 		case WM_SYSKEYUP:
 		case WM_KEYDOWN:
 		case WM_KEYUP: {
-			uint32 vkcode = w_param;
-			bool was_pressed = (l_param & (1 << 30)) != 0; // 30th bit indicates whether the key was pressed last call
-			bool is_pressed = (l_param & (1 << 31)) != 0; // 31th bit indicates whether the key is pressed right now
+			u32 vkcode = w_param;
+			bool32 was_pressed = (l_param & (1 << 30)) != 0; // 30th bit indicates whether the key was pressed last call
+			bool32 is_pressed = (l_param & (1 << 31)) != 0; // 31th bit indicates whether the key is pressed right now
+			bool32 is_alt_pressed = GET_BIT(l_param, 29);
 
-			if (vkcode == VK_ESCAPE) {
+			if (
+				(is_alt_pressed && vkcode == VK_F4) || // handle alt + f4 manually
+				(vkcode == VK_ESCAPE)
+			) {
 				running = false;
 			}
 		} break;
