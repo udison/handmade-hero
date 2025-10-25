@@ -1,7 +1,9 @@
 #include <windows.h>
 #include <cstdint>
+#include <winerror.h>
 #include <winuser.h>
 #include <xinput.h>
+#include <dsound.h>
 
 // just a nice way of differentiating the uses of "static" keyword,
 // which can mean different thing in different contexts
@@ -47,7 +49,7 @@ struct win32_window_dimension {
 #define X_INPUT_GET_STATE(name) DWORD WINAPI name(DWORD dwUserIndex, XINPUT_STATE* pState)
 typedef X_INPUT_GET_STATE(x_input_get_state);
 X_INPUT_GET_STATE(XInputGetStateStub) {
-	return 0;
+	return ERROR_DEVICE_NOT_CONNECTED;
 }
 global_var x_input_get_state* XInputGetState_ = XInputGetStateStub;
 #define XInputGetState XInputGetState_
@@ -55,7 +57,7 @@ global_var x_input_get_state* XInputGetState_ = XInputGetStateStub;
 #define X_INPUT_SET_STATE(name) DWORD WINAPI name(DWORD dwUserIndex, XINPUT_VIBRATION* pVibration)
 typedef X_INPUT_SET_STATE(x_input_set_state);
 X_INPUT_SET_STATE(XInputSetStateStub) {
-	return 0;
+	return ERROR_DEVICE_NOT_CONNECTED;
 }
 global_var x_input_set_state* XInputSetState_ = XInputSetStateStub;
 #define XInputSetState XInputSetState_
@@ -71,10 +73,7 @@ internal void win32_load_xinput(void) {
 		XInputSetState = (x_input_set_state*)GetProcAddress(xinput_library, "XInputSetState");
 	}
 }
-
-/*
- * End of XInput thingies
- */
+// End of XInput thingies
 
 global_var bool running;
 global_var win32_bmp_buffer backbuf;
@@ -216,6 +215,76 @@ LRESULT CALLBACK win32_main_window_callback(
 	return result;
 }
 
+#define DIRECT_SOUND_CREATE(name) HRESULT name(LPCGUID pcGuidDevice, LPDIRECTSOUND *ppDS, LPUNKNOWN pUnkOuter)
+typedef DIRECT_SOUND_CREATE(direct_sound_create_t);
+
+// TODO: DirectSound is deprecated, update to XAudio2 when possible
+// https://learn.microsoft.com/en-us/windows/win32/xaudio2/xaudio2-apis-portal
+internal void win32_init_dsound(HWND window, u32 samples_per_second, i32 buff_size) {
+	// load dsound dll
+	HMODULE dsound_lib = LoadLibraryA("dsound.dll");
+	
+	if (dsound_lib) {
+		// get directsound object
+		LPDIRECTSOUND direct_sound;
+		direct_sound_create_t* direct_sound_create_proc = (direct_sound_create_t *)GetProcAddress(dsound_lib, "DirectSoundCreate");
+
+		if (!direct_sound_create_proc || !SUCCEEDED(direct_sound_create_proc(0, &direct_sound, 0))) {
+			// TODO: log error
+			return;
+		}
+
+		if (!SUCCEEDED(direct_sound->SetCooperativeLevel(window, DSSCL_PRIORITY))) {
+			// TODO: log error
+			return;
+		}
+
+		// create a primary buffer 
+		DSBUFFERDESC primary_buffer_desc = {};
+		primary_buffer_desc.dwSize = sizeof(primary_buffer_desc);
+		primary_buffer_desc.dwFlags = DSBCAPS_PRIMARYBUFFER;
+
+		LPDIRECTSOUNDBUFFER primary_buff;
+
+		if (!SUCCEEDED(direct_sound->CreateSoundBuffer(&primary_buffer_desc, &primary_buff, 0))) {
+			// TODO: log error
+			return;
+		}
+
+		WAVEFORMATEX wave_format = {
+			.wFormatTag = WAVE_FORMAT_PCM,
+			.nChannels = 2,
+			.nSamplesPerSec = samples_per_second,
+			.wBitsPerSample = 16,
+			// .nAvgBytesPerSec = wave_format.nSamplesPerSec * wave_format.nBlockAlign,
+			// .nBlockAlign = wave_format.nChannels * wave_format.wBitsPerSample / 8,
+			.cbSize = 0,
+		};
+
+		wave_format.nBlockAlign = wave_format.nChannels * wave_format.wBitsPerSample / 8;
+		wave_format.nAvgBytesPerSec = wave_format.nSamplesPerSec * wave_format.nBlockAlign;
+
+		if (!SUCCEEDED(primary_buff->SetFormat(&wave_format))) {
+			// TODO: log error
+			return;
+		}
+
+		// create a secondary buffer - the one we actchually write data in
+		DSBUFFERDESC secondary_buffer_desc = {};
+		secondary_buffer_desc.dwSize = sizeof(secondary_buffer_desc);
+		secondary_buffer_desc.dwFlags = DSBCAPS_PRIMARYBUFFER;
+		secondary_buffer_desc.dwBufferBytes = buff_size;
+		secondary_buffer_desc.lpwfxFormat = &wave_format;
+
+		LPDIRECTSOUNDBUFFER secondary_buff;
+
+		if (!SUCCEEDED(direct_sound->CreateSoundBuffer(&secondary_buffer_desc, &secondary_buff, 0))) {
+			// TODO: log error
+			return;
+		}
+	}
+}
+
 int CALLBACK WinMain(HINSTANCE instance, HINSTANCE prev_instance, LPSTR cmd_line, int show_cmd) {
 	win32_load_xinput();
 
@@ -248,6 +317,8 @@ int CALLBACK WinMain(HINSTANCE instance, HINSTANCE prev_instance, LPSTR cmd_line
 		if (window) {
 			running = 1;
 
+			win32_init_dsound(window, 48000, 48000 * sizeof(i16) * 2);
+
 			int x_offset = 0;
 			int y_offset = 0;
 
@@ -266,6 +337,7 @@ int CALLBACK WinMain(HINSTANCE instance, HINSTANCE prev_instance, LPSTR cmd_line
 				for (DWORD controller_index = 0; controller_index < XUSER_MAX_COUNT; controller_index++) {
 					XINPUT_STATE controller_state;
 
+					// TODO: this is kinda buggy/laggy, there are notifications that handle this better
 					if (XInputGetState(controller_index, &controller_state) == ERROR_DEVICE_NOT_CONNECTED) {
 						continue;
 					}
