@@ -195,8 +195,8 @@ LRESULT CALLBACK win32_main_window_callback(
 		case WM_KEYDOWN:
 		case WM_KEYUP: {
 			u32 vkcode = w_param;
-			bool32 was_pressed = (l_param & (1 << 30)) != 0; // 30th bit indicates whether the key was pressed last call
-			bool32 is_pressed = (l_param & (1 << 31)) != 0; // 31th bit indicates whether the key is pressed right now
+			bool32 was_pressed = GET_BIT(l_param, 30) != 0; // 30th bit indicates whether the key was pressed last call
+			bool32 is_pressed = GET_BIT(l_param, 31) == 0; // 31th bit indicates whether the key is pressed right now
 			bool32 is_alt_pressed = GET_BIT(l_param, 29);
 
 			if (
