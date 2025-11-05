@@ -1,9 +1,9 @@
 #include <windows.h>
-#include <cstdint>
 #include <winerror.h>
 #include <winuser.h>
 #include <xinput.h>
 #include <dsound.h>
+#include <stdint.h>
 
 // just a nice way of differentiating the uses of "static" keyword,
 // which can mean different thing in different contexts
@@ -77,6 +77,7 @@ internal void win32_load_xinput(void) {
 
 global_var bool running;
 global_var win32_bmp_buffer backbuf;
+global_var LPDIRECTSOUNDBUFFER audio_buffer; // secondary direct audio buffer
 
 internal win32_window_dimension win32_get_window_dimension(HWND window) {
 	RECT client_rect;
@@ -276,13 +277,12 @@ internal void win32_init_dsound(HWND window, u32 samples_per_second, i32 buff_si
 	// create a secondary buffer - the one we actchually write data in
 	DSBUFFERDESC secondary_buffer_desc = {};
 	secondary_buffer_desc.dwSize = sizeof(secondary_buffer_desc);
-	secondary_buffer_desc.dwFlags = DSBCAPS_PRIMARYBUFFER;
+	secondary_buffer_desc.dwFlags = 0;
 	secondary_buffer_desc.dwBufferBytes = buff_size;
 	secondary_buffer_desc.lpwfxFormat = &wave_format;
 
-	LPDIRECTSOUNDBUFFER secondary_buff;
-
-	if (!SUCCEEDED(direct_sound->CreateSoundBuffer(&secondary_buffer_desc, &secondary_buff, 0))) {
+	HRESULT result = direct_sound->CreateSoundBuffer(&secondary_buffer_desc, &audio_buffer, 0);
+	if (!SUCCEEDED(result)) {
 		// TODO: log error
 		return;
 	}
@@ -315,15 +315,28 @@ int CALLBACK WinMain(HINSTANCE instance, HINSTANCE prev_instance, LPSTR cmd_line
 			0
 		);
 
+		// graphics test
+		int x_offset = 0;
+		int y_offset = 0;
+
+		// sound test
+		int samples_per_second = 48000;
+		int tone_hz = 256;
+		u16 tone_volume = 2000;
+		u32 running_sample_index = 0;
+		int sqr_wave_period = samples_per_second / tone_hz;
+		int half_sqr_wave_period = sqr_wave_period / 2;
+		int bytes_per_sample = sizeof(i16) * 2;
+		int audio_buffer_size = samples_per_second * bytes_per_sample;
+
+		win32_init_dsound(window, samples_per_second, audio_buffer_size);
+
+		audio_buffer->Play(0, 0, DSBPLAY_LOOPING);
+
 		win32_resize_dbi_section(&backbuf, 1280, 720);
 
 		if (window) {
 			running = 1;
-
-			win32_init_dsound(window, 48000, 48000 * sizeof(i16) * 2);
-
-			int x_offset = 0;
-			int y_offset = 0;
 
 			while (running) {
 				MSG message;
@@ -385,6 +398,57 @@ int CALLBACK WinMain(HINSTANCE instance, HINSTANCE prev_instance, LPSTR cmd_line
 				}
 
 				render_cool_gradient(&backbuf, x_offset, y_offset);
+
+				// dsound output test
+				DWORD play_cursor;
+				DWORD write_cursor;
+				if (SUCCEEDED(audio_buffer->GetCurrentPosition(&play_cursor, &write_cursor))) {
+					DWORD byte_to_lock = running_sample_index * bytes_per_sample % audio_buffer_size;
+					DWORD bytes_to_write;
+					if (byte_to_lock > play_cursor) {
+						bytes_to_write = audio_buffer_size - byte_to_lock;
+						bytes_to_write += play_cursor;
+					}
+					else {
+						bytes_to_write = play_cursor - byte_to_lock;
+					}
+
+					VOID* region1;
+					DWORD region1_size;
+					VOID* region2;
+					DWORD region2_size;
+
+					HRESULT lock_result = audio_buffer->Lock(
+						byte_to_lock,
+						bytes_to_write,
+						&region1, &region1_size,
+						&region2, &region2_size,
+						0
+					);
+
+					if (SUCCEEDED(lock_result)) {
+						i16* sample_out = (i16*)region1;
+						DWORD region1_sample_count = region1_size / bytes_per_sample;
+						for (DWORD sample_index = 0; sample_index < region1_sample_count; ++sample_index) {
+							i16 sample_value = (running_sample_index++ / half_sqr_wave_period) % 2 ? tone_volume : -tone_volume;
+							*sample_out++ = sample_value;
+							*sample_out++ = sample_value;
+						}
+
+						sample_out = (i16*)region2;
+						DWORD region2_sample_count = region2_size / bytes_per_sample;
+						for (DWORD sample_index = 0; sample_index < region2_sample_count; ++sample_index) {
+							i16 sample_value = (running_sample_index++ / half_sqr_wave_period) % 2 ? tone_volume : -tone_volume;
+							*sample_out++ = sample_value;
+							*sample_out++ = sample_value;
+						}
+
+						audio_buffer->Unlock(
+							region1, region1_size,
+							region2, region2_size
+						);
+					}
+				}
 
 				HDC hdc = GetDC(window);
 				win32_window_dimension dim = win32_get_window_dimension(window);
