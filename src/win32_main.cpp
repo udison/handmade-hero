@@ -4,6 +4,7 @@
 #include <xinput.h>
 #include <dsound.h>
 #include <stdint.h>
+#include <math.h>
 
 // just a nice way of differentiating the uses of "static" keyword,
 // which can mean different thing in different contexts
@@ -12,6 +13,8 @@
 #define global_var    static // a global variable... thats just it
 
 #define GET_BIT(var, position) (var & (1 << position))
+
+#define PI_32 3.14159265359f
 
 typedef uint8_t  u8;
 typedef uint16_t u16;
@@ -24,6 +27,9 @@ typedef int8_t  i8;
 typedef int16_t i16;
 typedef int32_t i32;
 typedef int64_t i64;
+
+typedef float  f32;
+typedef double f64;
 
 struct win32_bmp_buffer {
 	BITMAPINFO info;
@@ -288,6 +294,62 @@ internal void win32_init_dsound(HWND window, u32 samples_per_second, i32 buff_si
 	}
 }
 
+struct win32_sound_output {
+	int samples_per_second;
+	int tone_hz;
+	u16 tone_volume;
+	u32 running_sample_index;
+	int wave_period;
+	int bytes_per_sample;
+	int audio_buffer_size;
+};
+
+void win32_fill_sound_buffer(win32_sound_output* sound_output, DWORD byte_to_lock, DWORD bytes_to_write) {
+	VOID* region1;
+	DWORD region1_size;
+	VOID* region2;
+	DWORD region2_size;
+
+	HRESULT lock_result = audio_buffer->Lock(
+		byte_to_lock,
+		bytes_to_write,
+		&region1, &region1_size,
+		&region2, &region2_size,
+		0
+	);
+
+	if (SUCCEEDED(lock_result)) {
+		i16* sample_out = (i16*)region1;
+		DWORD region1_sample_count = region1_size / sound_output->bytes_per_sample;
+		for (DWORD sample_index = 0; sample_index < region1_sample_count; ++sample_index) {
+			// i16 sample_value = (running_sample_index++ / half_wave_period) % 2 ? tone_volume : -tone_volume;
+			f32 t = 2.0f * PI_32 * (f32)sound_output->running_sample_index / (f32)sound_output->wave_period;
+			f32 sine_value = sinf(t);
+			i16 sample_value = (i16)(sine_value * sound_output->tone_volume);
+			*sample_out++ = sample_value;
+			*sample_out++ = sample_value;
+			++sound_output->running_sample_index;
+		}
+
+		sample_out = (i16*)region2;
+		DWORD region2_sample_count = region2_size / sound_output->bytes_per_sample;
+		for (DWORD sample_index = 0; sample_index < region2_sample_count; ++sample_index) {
+			f32 t = 2.0f * PI_32 * (f32)sound_output->running_sample_index / (f32)sound_output->wave_period;
+			f32 sine_value = sinf(t);
+			i16 sample_value = (i16)(sine_value * sound_output->tone_volume);
+			*sample_out++ = sample_value;
+			*sample_out++ = sample_value;
+			++sound_output->running_sample_index;
+		}
+
+		audio_buffer->Unlock(
+			region1, region1_size,
+			region2, region2_size
+		);
+	}
+
+}
+
 int CALLBACK WinMain(HINSTANCE instance, HINSTANCE prev_instance, LPSTR cmd_line, int show_cmd) {
 	win32_load_xinput();
 
@@ -319,18 +381,18 @@ int CALLBACK WinMain(HINSTANCE instance, HINSTANCE prev_instance, LPSTR cmd_line
 		int x_offset = 0;
 		int y_offset = 0;
 
+		win32_sound_output sound_output;
+		sound_output.samples_per_second = 48000;
+		sound_output.tone_hz = 256;
+		sound_output.tone_volume = 2000;
+		sound_output.running_sample_index = 0;
+		sound_output.wave_period = sound_output.samples_per_second / sound_output.tone_hz;
+		sound_output.bytes_per_sample = sizeof(i16) * 2;
+		sound_output.audio_buffer_size = sound_output.samples_per_second * sound_output.bytes_per_sample;
+
 		// sound test
-		int samples_per_second = 48000;
-		int tone_hz = 256;
-		u16 tone_volume = 2000;
-		u32 running_sample_index = 0;
-		int sqr_wave_period = samples_per_second / tone_hz;
-		int half_sqr_wave_period = sqr_wave_period / 2;
-		int bytes_per_sample = sizeof(i16) * 2;
-		int audio_buffer_size = samples_per_second * bytes_per_sample;
-
-		win32_init_dsound(window, samples_per_second, audio_buffer_size);
-
+		win32_init_dsound(window, sound_output.samples_per_second, sound_output.audio_buffer_size);
+		win32_fill_sound_buffer(&sound_output, 0, sound_output.audio_buffer_size);
 		audio_buffer->Play(0, 0, DSBPLAY_LOOPING);
 
 		win32_resize_dbi_section(&backbuf, 1280, 720);
@@ -403,51 +465,20 @@ int CALLBACK WinMain(HINSTANCE instance, HINSTANCE prev_instance, LPSTR cmd_line
 				DWORD play_cursor;
 				DWORD write_cursor;
 				if (SUCCEEDED(audio_buffer->GetCurrentPosition(&play_cursor, &write_cursor))) {
-					DWORD byte_to_lock = running_sample_index * bytes_per_sample % audio_buffer_size;
+					DWORD byte_to_lock = sound_output.running_sample_index * sound_output.bytes_per_sample % sound_output.audio_buffer_size;
 					DWORD bytes_to_write;
-					if (byte_to_lock > play_cursor) {
-						bytes_to_write = audio_buffer_size - byte_to_lock;
+					if (byte_to_lock == play_cursor) {
+						bytes_to_write = 0;
+					}
+					else if (byte_to_lock > play_cursor) {
+						bytes_to_write = sound_output.audio_buffer_size - byte_to_lock;
 						bytes_to_write += play_cursor;
 					}
 					else {
 						bytes_to_write = play_cursor - byte_to_lock;
 					}
 
-					VOID* region1;
-					DWORD region1_size;
-					VOID* region2;
-					DWORD region2_size;
-
-					HRESULT lock_result = audio_buffer->Lock(
-						byte_to_lock,
-						bytes_to_write,
-						&region1, &region1_size,
-						&region2, &region2_size,
-						0
-					);
-
-					if (SUCCEEDED(lock_result)) {
-						i16* sample_out = (i16*)region1;
-						DWORD region1_sample_count = region1_size / bytes_per_sample;
-						for (DWORD sample_index = 0; sample_index < region1_sample_count; ++sample_index) {
-							i16 sample_value = (running_sample_index++ / half_sqr_wave_period) % 2 ? tone_volume : -tone_volume;
-							*sample_out++ = sample_value;
-							*sample_out++ = sample_value;
-						}
-
-						sample_out = (i16*)region2;
-						DWORD region2_sample_count = region2_size / bytes_per_sample;
-						for (DWORD sample_index = 0; sample_index < region2_sample_count; ++sample_index) {
-							i16 sample_value = (running_sample_index++ / half_sqr_wave_period) % 2 ? tone_volume : -tone_volume;
-							*sample_out++ = sample_value;
-							*sample_out++ = sample_value;
-						}
-
-						audio_buffer->Unlock(
-							region1, region1_size,
-							region2, region2_size
-						);
-					}
+					win32_fill_sound_buffer(&sound_output, byte_to_lock, bytes_to_write);
 				}
 
 				HDC hdc = GetDC(window);
