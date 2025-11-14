@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <winerror.h>
+#include <winnt.h>
 #include <winuser.h>
 #include <xinput.h>
 #include <dsound.h>
@@ -351,6 +352,10 @@ void win32_fill_sound_buffer(win32_sound_output* sound_output, DWORD byte_to_loc
 }
 
 int CALLBACK WinMain(HINSTANCE instance, HINSTANCE prev_instance, LPSTR cmd_line, int show_cmd) {
+	LARGE_INTEGER perf_count_freq_result;
+	QueryPerformanceFrequency(&perf_count_freq_result);
+	i64 perf_count_freq = perf_count_freq_result.QuadPart;
+
 	win32_load_xinput();
 
 	WNDCLASSA window_class = {
@@ -400,7 +405,12 @@ int CALLBACK WinMain(HINSTANCE instance, HINSTANCE prev_instance, LPSTR cmd_line
 		if (window) {
 			running = 1;
 
+			LARGE_INTEGER begin_perf_counter;
+			QueryPerformanceCounter(&begin_perf_counter);
+			u64 last_cycle_count = __rdtsc();
+
 			while (running) {
+
 				MSG message;
 
 				while (PeekMessage(&message, 0, 0, 0, PM_REMOVE)) {
@@ -488,6 +498,23 @@ int CALLBACK WinMain(HINSTANCE instance, HINSTANCE prev_instance, LPSTR cmd_line
 
 				// x_offset++;
 				// y_offset++;
+
+				i64 end_cycle_count = __rdtsc();
+				LARGE_INTEGER end_perf_counter;
+				QueryPerformanceCounter(&end_perf_counter);
+
+				u64 cycles_elapsed = end_cycle_count - last_cycle_count;
+				i32 mega_cycles_per_frame = (i32)(cycles_elapsed / (1000 * 1000));
+				i64 difference = end_perf_counter.QuadPart - begin_perf_counter.QuadPart;
+				i32 frame_time_in_millis = (i32)((1000 * difference) / perf_count_freq);
+				i32 fps = perf_count_freq / difference;
+
+				char buff[256];
+				wsprintf(buff, "%dms/f, %d fps, %dmc/f\n", frame_time_in_millis, fps, mega_cycles_per_frame);
+				OutputDebugStringA(buff);
+
+				last_cycle_count = end_cycle_count;
+				begin_perf_counter = end_perf_counter;
 			}
 		}
 	}
