@@ -1,0 +1,25 @@
+// raddbg 0.9.25 project file
+
+recent_file: path: "src/win32_main.cpp"
+recent_file: path: "../rocks-engine/engine/main.cpp"
+debug_info:
+{
+  path: "C:/dev/cpp/rocks-engine/out/engine.exe"
+  timestamp: 66199395044322
+}
+debug_info:
+{
+  path: "C:/dev/cpp/rocks-engine/out/engine.pdb"
+  timestamp: 66199451368080
+}
+target:
+{
+  executable: "build/win32_main.exe"
+  working_directory: ""
+  enabled: 1
+}
+debug_info:
+{
+  path: "C:/dev/cpp/handmade-hero/build/win32_main.pdb"
+  timestamp: 66199627153609
+}
